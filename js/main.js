@@ -55,6 +55,8 @@ async function initializeCore() {
     if (DEBUG.ENABLED) {
       window.game = game;
       window.uiManager = uiManager;
+      window.inputHandler = uiManager.inputHandler;
+      window.modalManager = uiManager.modalManager;
       window.eventBus = eventBus;
       window.cardFactory = cardFactory;
       console.log("Debug objects attached to window");

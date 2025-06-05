@@ -1,6 +1,6 @@
 /**
- * Bluff Battle - UI Manager (FIXED)
- * Key fixes: Challenge button visibility, card selection highlighting
+ * Bluff Battle - Core UI Manager (FIXED)
+ * Main UI orchestrator - delegates to specialized renderers
  */
 
 class UIManager {
@@ -8,13 +8,14 @@ class UIManager {
     this.game = game;
     this.elements = {};
     this.isInitialized = false;
-    this.animationQueue = [];
-    this.isAnimating = false;
 
-    // UI state
-    this.selectedCardElement = null;
-    this.selectedPositionElement = null;
-    this.hoveredElements = new Set();
+    // Specialized renderers - will be created after DOM elements are cached
+    this.gridRenderer = null;
+    this.handRenderer = null;
+    this.logRenderer = null;
+    this.modalManager = null;
+    this.inputHandler = null;
+    this.stateManager = null;
 
     if (DEBUG.ENABLED) {
       console.log("UIManager initialized");
@@ -22,15 +23,18 @@ class UIManager {
   }
 
   /**
-   * Initialize the UI Manager and cache DOM elements
+   * Initialize the UI Manager and all sub-systems
    */
   async initialize() {
     try {
-      // Cache frequently used DOM elements
+      // Cache DOM elements FIRST
       this.cacheElements();
 
-      // Setup event listeners
-      this.setupEventListeners();
+      // Initialize specialized renderers AFTER elements are cached
+      await this.initializeRenderers();
+
+      // Setup core event listeners
+      this.setupCoreEventListeners();
 
       // Initialize UI state
       await this.initializeUI();
@@ -47,7 +51,7 @@ class UIManager {
   }
 
   /**
-   * Cache DOM elements for quick access
+   * Cache frequently accessed DOM elements
    */
   cacheElements() {
     // Main containers
@@ -80,7 +84,13 @@ class UIManager {
     // Game log
     this.elements.gameLog = document.getElementById("game-log");
 
-    // Validate essential elements exist
+    this.validateEssentialElements();
+  }
+
+  /**
+   * Validate that essential DOM elements exist
+   */
+  validateEssentialElements() {
     const requiredElements = [
       "gameContainer",
       "gameGrid",
@@ -100,216 +110,92 @@ class UIManager {
   }
 
   /**
-   * Setup event listeners for UI interactions
+   * Initialize all specialized renderers
    */
-  setupEventListeners() {
-    // Claim button listeners
-    if (this.elements.claimRock) {
-      this.elements.claimRock.addEventListener("click", () => {
-        this.handleClaimSelection(CARD_TYPES.ROCK);
-      });
+  async initializeRenderers() {
+    // Grid renderer
+    if (this.game?.gridSystem && this.elements.gameGrid) {
+      this.gridRenderer = new GridRenderer(
+        this.elements.gameGrid,
+        this.game.gridSystem
+      );
+      await this.gridRenderer.initialize();
     }
 
-    if (this.elements.claimPaper) {
-      this.elements.claimPaper.addEventListener("click", () => {
-        this.handleClaimSelection(CARD_TYPES.PAPER);
-      });
+    // Hand renderer - FIXED: Only create if we have a human player
+    if (this.game?.humanPlayer && this.elements.playerHand) {
+      this.handRenderer = new HandRenderer(
+        this.elements.playerHand,
+        this.game.humanPlayer
+      );
+      await this.handRenderer.initialize();
     }
 
-    if (this.elements.claimScissors) {
-      this.elements.claimScissors.addEventListener("click", () => {
-        this.handleClaimSelection(CARD_TYPES.SCISSORS);
-      });
+    // Log renderer
+    if (this.elements.gameLog) {
+      this.logRenderer = new LogRenderer(this.elements.gameLog);
+      await this.logRenderer.initialize();
     }
 
-    // Action button listeners
-    if (this.elements.confirmPlay) {
-      this.elements.confirmPlay.addEventListener("click", () => {
-        this.handlePlayConfirmation();
-      });
+    // Modal manager
+    if (this.elements.modalOverlay && this.elements.modalContent) {
+      this.modalManager = new ModalManager(
+        this.elements.modalOverlay,
+        this.elements.modalContent
+      );
+      await this.modalManager.initialize();
     }
 
-    if (this.elements.cancelPlay) {
-      this.elements.cancelPlay.addEventListener("click", () => {
-        this.handlePlayCancellation();
-      });
-    }
+    // Input handler
+    this.inputHandler = new InputHandler(this);
+    await this.inputHandler.initialize();
 
-    if (this.elements.challengeBtn) {
-      this.elements.challengeBtn.addEventListener("click", () => {
-        this.handleChallenge();
-      });
-    }
+    // UI state manager
+    this.stateManager = new UIStateManager(this);
+    await this.stateManager.initialize();
 
-    // Control button listeners
-    if (this.elements.pauseBtn) {
-      this.elements.pauseBtn.addEventListener("click", () => {
-        this.handlePauseToggle();
-      });
-    }
-
-    if (this.elements.settingsBtn) {
-      this.elements.settingsBtn.addEventListener("click", () => {
-        this.showSettingsModal();
-      });
-    }
-
-    // Game event listeners
-    this.setupGameEventListeners();
-
-    // Global key listeners
-    document.addEventListener("keydown", (e) => {
-      this.handleKeyPress(e);
-    });
-
-    // Modal click-outside-to-close
-    if (this.elements.modalOverlay) {
-      this.elements.modalOverlay.addEventListener("click", (e) => {
-        if (e.target === this.elements.modalOverlay) {
-          this.hideModal();
-        }
-      });
+    if (DEBUG.ENABLED) {
+      console.log("All renderers initialized successfully");
     }
   }
 
   /**
-   * Setup game event listeners
+   * Setup core UI event listeners
    */
-  setupGameEventListeners() {
+  setupCoreEventListeners() {
     // Game state events
-    eventBus.on(EVENTS.GAME_START, (data) => {
-      this.onGameStart(data);
-    });
-
-    eventBus.on(EVENTS.GAME_END, (data) => {
-      this.onGameEnd(data);
-    });
-
-    eventBus.on(EVENTS.ROUND_START, (data) => {
-      this.onRoundStart(data);
-    });
-
-    eventBus.on(EVENTS.ROUND_END, (data) => {
-      this.onRoundEnd(data);
-    });
-
-    eventBus.on(EVENTS.TURN_START, (data) => {
-      this.onTurnStart(data);
-    });
-
-    eventBus.on(EVENTS.TURN_END, (data) => {
-      this.onTurnEnd(data);
-    });
-
-    // Play events
-    eventBus.on(EVENTS.CARD_SELECTED, (data) => {
-      this.onCardSelected(data);
-    });
-
-    eventBus.on(EVENTS.PLAY_CONFIRMED, (data) => {
-      this.onPlayConfirmed(data);
-    });
-
-    // Battle events
-    eventBus.on(EVENTS.BATTLE_START, (data) => {
-      this.onBattleStart(data);
-    });
-
-    eventBus.on(EVENTS.BATTLE_RESULT, (data) => {
-      this.onBattleResult(data);
-    });
-
-    eventBus.on(EVENTS.BATTLE_END, (data) => {
-      this.onBattleEnd(data);
-    });
-
-    // Challenge events - FIXED
-    eventBus.on(EVENTS.CHALLENGE_MADE, (data) => {
-      this.onChallengeMade(data);
-    });
-
-    eventBus.on(EVENTS.CHALLENGE_WINDOW_OPEN, (data) => {
-      this.onChallengeWindowOpen(data);
-    });
-
-    eventBus.on(EVENTS.CHALLENGE_WINDOW_CLOSED, (data) => {
-      this.onChallengeWindowClosed(data);
-    });
+    eventBus.on(EVENTS.GAME_START, (data) => this.onGameStart(data));
+    eventBus.on(EVENTS.GAME_END, (data) => this.onGameEnd(data));
+    eventBus.on(EVENTS.ROUND_START, (data) => this.onRoundStart(data));
+    eventBus.on(EVENTS.ROUND_END, (data) => this.onRoundEnd(data));
+    eventBus.on(EVENTS.TURN_START, (data) => this.onTurnStart(data));
+    eventBus.on(EVENTS.TURN_END, (data) => this.onTurnEnd(data));
 
     // Score events
-    eventBus.on(EVENTS.SCORE_UPDATE, (data) => {
-      this.onScoreUpdate(data);
-    });
+    eventBus.on(EVENTS.SCORE_UPDATE, (data) => this.updateScores());
+
+    // Challenge events
+    eventBus.on(EVENTS.CHALLENGE_WINDOW_OPEN, (data) =>
+      this.onChallengeWindowOpen(data)
+    );
+    eventBus.on(EVENTS.CHALLENGE_WINDOW_CLOSED, (data) =>
+      this.onChallengeWindowClosed(data)
+    );
+    eventBus.on(EVENTS.CHALLENGE_MADE, (data) => this.onChallengeMade(data));
 
     // Error events
-    eventBus.on(EVENTS.ERROR, (data) => {
-      this.onError(data);
-    });
+    eventBus.on(EVENTS.ERROR, (data) => this.onError(data));
 
-    if (DEBUG.ENABLED) {
-      console.log("Game event listeners setup complete");
-    }
-  }
-
-  /**
-   * Initialize UI state
-   */
-  async initializeUI() {
-    // Hide loading screen
-    this.hideLoadingScreen();
-
-    // Create initial grid
-    this.createGrid();
-
-    // Update initial UI state
-    this.updateUI();
-
-    // Add initial log message
-    this.addLogMessage("Welcome to Bluff Battle! Start a new game to begin.");
-  }
-
-  /**
-   * Create the game grid
-   */
-  createGrid() {
-    if (!this.elements.gameGrid) return;
-
-    this.elements.gameGrid.innerHTML = "";
-
-    for (let i = 0; i < GAME_CONFIG.TOTAL_POSITIONS; i++) {
-      const gridPosition = document.createElement("div");
-      gridPosition.className = "grid-position";
-      gridPosition.dataset.position = i;
-
-      // Add click listener for position selection
-      gridPosition.addEventListener("click", () => {
-        this.handlePositionSelection(i);
-      });
-
-      // Add hover effects
-      gridPosition.addEventListener("mouseenter", () => {
-        this.handlePositionHover(i, true);
-      });
-
-      gridPosition.addEventListener("mouseleave", () => {
-        this.handlePositionHover(i, false);
-      });
-
-      this.elements.gameGrid.appendChild(gridPosition);
-    }
-
-    if (DEBUG.ENABLED) {
-      console.log(`Created grid with ${GAME_CONFIG.TOTAL_POSITIONS} positions`);
-    }
+    // Card and play events - FIXED: Handle these properly
+    eventBus.on(EVENTS.CARD_SELECTED, (data) => this.onCardSelected(data));
+    eventBus.on(EVENTS.PLAY_CONFIRMED, (data) => this.onPlayConfirmed(data));
   }
 
   /**
    * Update the entire UI based on current game state
    */
   updateUI() {
-    if (!this.game || !this.isInitialized) {
-      return;
-    }
+    if (!this.game || !this.isInitialized) return;
 
     try {
       const gameState = this.game.getGameState();
@@ -317,100 +203,37 @@ class UIManager {
       // Update scores
       this.updateScores();
 
-      // Update turn indicator
+      // Update turn and round info
       this.updateTurnIndicator(gameState);
-
-      // Update round counter
       this.updateRoundCounter(gameState.roundNumber || 1);
-
-      // Update player hand
-      this.updatePlayerHand();
-
-      // Update grid
-      this.updateGrid();
 
       // Update action buttons
       this.updateActionButtons(gameState);
-
-      // Update challenge button - FIXED
       this.updateChallengeButton(gameState);
+
+      // Update player hand - FIXED: Always update hand display
+      this.updatePlayerHand();
+
+      // Let specialized renderers update themselves
+      this.gridRenderer?.render();
     } catch (error) {
       console.error("Error updating UI:", error);
     }
   }
 
   /**
-   * Update challenge button state - FIXED
-   * @param {Object} gameState - Current game state
-   */
-  updateChallengeButton(gameState) {
-    if (!this.elements.challengeBtn) return;
-
-    // FIXED: Check if challenge system exists and can challenge
-    const canChallenge =
-      this.game.challengeSystem &&
-      this.game.challengeSystem.canChallenge() &&
-      (!gameState.currentPlayer ||
-        gameState.currentPlayer.type === PLAYER_TYPES.HUMAN);
-
-    // FIXED: Show/hide button based on challenge availability
-    if (canChallenge) {
-      this.elements.challengeBtn.style.display = "block";
-      this.elements.challengeBtn.disabled = false;
-      this.elements.challengeBtn.classList.add("pulse");
-
-      // Show challenge info
-      const challengeablePlay =
-        this.game.challengeSystem.getChallengeablePlay();
-      if (challengeablePlay) {
-        this.elements.challengeBtn.title = `Challenge ${challengeablePlay.player}'s ${challengeablePlay.claimedType} claim`;
-      }
-    } else {
-      this.elements.challengeBtn.style.display = "none";
-      this.elements.challengeBtn.disabled = true;
-      this.elements.challengeBtn.classList.remove("pulse");
-      this.elements.challengeBtn.title = "";
-    }
-
-    if (DEBUG.ENABLED) {
-      console.log("Challenge button updated:", {
-        canChallenge,
-        gameState: gameState.waitingForChallenge,
-      });
-    }
-  }
-
-  /**
-   * Handle card selection - FIXED
-   * @param {Card} card - Selected card
-   */
-  handleCardSelection(card) {
-    // FIXED: Clear previous selection first
-    this.clearCardSelection();
-
-    eventBus.emit("ui:card_selected", { card });
-
-    // FIXED: Update visual selection immediately
-    const cardElement = this.findCardElement(card.id);
-    if (cardElement) {
-      cardElement.classList.add("selected");
-      this.selectedCardElement = cardElement;
-
-      if (DEBUG.ENABLED) {
-        console.log("Card selected and highlighted:", card.id);
-      }
-    }
-
-    this.updateUI();
-  }
-
-  /**
-   * Update player hand display - FIXED
+   * Update player hand display - FIXED: Direct DOM manipulation if renderer not available
    */
   updatePlayerHand() {
-    if (!this.elements.playerHand || !this.game || !this.game.humanPlayer)
-      return;
+    if (!this.elements.playerHand || !this.game?.humanPlayer) return;
 
+    // If we have a hand renderer, use it
+    if (this.handRenderer) {
+      this.handRenderer.render();
+      return;
+    }
+
+    // Fallback: Direct DOM manipulation for card display
     this.elements.playerHand.innerHTML = "";
     const hand = this.game.humanPlayer.hand;
 
@@ -419,19 +242,15 @@ class UIManager {
       const cardElement = this.createCardElement(card, i);
       this.elements.playerHand.appendChild(cardElement);
 
-      // FIXED: Restore selection state if this card is selected
+      // Restore selection state if this card is selected
       if (this.game.selectedCard && this.game.selectedCard.id === card.id) {
         cardElement.classList.add("selected");
-        this.selectedCardElement = cardElement;
       }
     }
   }
 
   /**
-   * Create a card element - FIXED
-   * @param {Card} card - Card to create element for
-   * @param {number} index - Index in hand
-   * @returns {HTMLElement} Card element
+   * Create a card element - FIXED: Ensure this works without HandRenderer
    */
   createCardElement(card, index) {
     const cardElement = document.createElement("div");
@@ -450,100 +269,99 @@ class UIManager {
     cardElement.appendChild(cardIcon);
     cardElement.appendChild(cardName);
 
-    // Add click listener
+    // Add click listener - FIXED: Make sure this works
     cardElement.addEventListener("click", () => {
       this.handleCardSelection(card);
     });
 
     // Add hover effects
     cardElement.addEventListener("mouseenter", () => {
-      this.handleCardHover(card, true);
+      cardElement.classList.add("hover");
     });
 
     cardElement.addEventListener("mouseleave", () => {
-      this.handleCardHover(card, false);
+      cardElement.classList.remove("hover");
     });
 
     return cardElement;
   }
 
-  // Challenge event handlers - FIXED
-
-  onChallengeWindowOpen(data) {
-    if (DEBUG.ENABLED) {
-      console.log("Challenge window opened", data);
-    }
-
-    // FIXED: Show clear message about challenge opportunity
-    this.addLogMessage(
-      "💭 Challenge opportunity! Click the Challenge button if you think the AI is bluffing!",
-      "highlight"
-    );
-
-    // Force UI update to show challenge button
-    this.updateUI();
-  }
-
-  onChallengeWindowClosed(data) {
-    if (DEBUG.ENABLED) {
-      console.log("Challenge window closed", data);
-    }
-
-    this.addLogMessage("Challenge window closed.", "normal");
-    this.updateUI();
-  }
-
-  onChallengeMade(data) {
-    const challengerName =
-      data.challenger.type === PLAYER_TYPES.HUMAN ? "You" : "AI";
-
-    // FIXED: Better challenge result messaging
-    if (data.challengeResult) {
-      const wasBluff = data.challengeResult.wasBluff;
-      const resultText = wasBluff
-        ? "Challenge successful! They were bluffing!"
-        : "Challenge failed. They were telling the truth.";
-      this.addLogMessage(
-        `⚡ ${challengerName} challenged: ${resultText}`,
-        "challenge"
-      );
+  /**
+   * Handle card selection - FIXED: Direct handling
+   */
+  handleCardSelection(card) {
+    if (this.inputHandler) {
+      this.inputHandler.handleCardSelection(card);
     } else {
-      this.addLogMessage(`⚡ ${challengerName} made a challenge`, "challenge");
+      // Fallback: Direct game interaction
+      if (this.game.currentPlayer?.type === PLAYER_TYPES.HUMAN) {
+        this.game.handlePlayerAction(PLAYER_ACTIONS.SELECT_CARD, { card });
+        this.updateUI();
+      }
+    }
+  }
+
+  /**
+   * Update score display
+   */
+  updateScores() {
+    if (this.game?.humanPlayer && this.elements.playerScore) {
+      this.elements.playerScore.textContent = this.game.humanPlayer.score;
+    }
+    if (this.game?.aiPlayer && this.elements.aiScore) {
+      this.elements.aiScore.textContent = this.game.aiPlayer.score;
+    }
+  }
+
+  /**
+   * Update turn indicator
+   */
+  updateTurnIndicator(gameState) {
+    if (!this.elements.turnIndicator) return;
+
+    let text = "Game Setup";
+
+    if (gameState.currentPlayer) {
+      text =
+        gameState.currentPlayer.type === PLAYER_TYPES.HUMAN
+          ? "Your Turn"
+          : "AI Turn";
+
+      if (
+        gameState.waitingForChallenge ||
+        (this.game.challengeSystem && this.game.challengeSystem.canChallenge())
+      ) {
+        text = "⚡ Challenge Opportunity!";
+      }
     }
 
-    this.updateUI();
+    switch (gameState.turnPhase) {
+      case TURN_PHASES.BATTLE:
+        text = "Battle Phase";
+        break;
+      case TURN_PHASES.SCORING:
+        text = "Scoring";
+        break;
+    }
+
+    this.elements.turnIndicator.textContent = text;
   }
 
   /**
-   * Clear card selection - FIXED
+   * Update round counter
    */
-  clearCardSelection() {
-    // FIXED: Remove selected class from all cards, not just tracked element
-    const allCards = this.elements.playerHand.querySelectorAll(".hand-card");
-    allCards.forEach((card) => card.classList.remove("selected"));
-
-    this.selectedCardElement = null;
+  updateRoundCounter(roundNumber) {
+    if (this.elements.roundCounter) {
+      this.elements.roundCounter.textContent = `Round ${roundNumber}`;
+    }
   }
-
-  /**
-   * Find card element by ID - FIXED
-   * @param {string} cardId - Card ID to find
-   * @returns {HTMLElement|null} Card element or null
-   */
-  findCardElement(cardId) {
-    return this.elements.playerHand.querySelector(`[data-card-id="${cardId}"]`);
-  }
-
-  // ... (rest of the methods remain the same)
 
   /**
    * Update action buttons state
-   * @param {Object} gameState - Current game state
    */
   updateActionButtons(gameState) {
     const canPlay =
-      gameState.currentPlayer &&
-      gameState.currentPlayer.type === PLAYER_TYPES.HUMAN &&
+      gameState.currentPlayer?.type === PLAYER_TYPES.HUMAN &&
       gameState.turnPhase === TURN_PHASES.PLACEMENT &&
       gameState.selectedCard &&
       gameState.selectedPosition !== null &&
@@ -568,10 +386,8 @@ class UIManager {
       this.elements.claimPaper,
       this.elements.claimScissors,
     ];
-
     const canClaim =
-      gameState.currentPlayer &&
-      gameState.currentPlayer.type === PLAYER_TYPES.HUMAN &&
+      gameState.currentPlayer?.type === PLAYER_TYPES.HUMAN &&
       gameState.selectedCard;
 
     claimButtons.forEach((button) => {
@@ -586,249 +402,56 @@ class UIManager {
   }
 
   /**
-   * Handle challenge attempt - FIXED
+   * Update challenge button state
    */
-  handleChallenge() {
-    if (DEBUG.ENABLED) {
-      console.log("Challenge button clicked");
-    }
+  updateChallengeButton(gameState) {
+    if (!this.elements.challengeBtn) return;
 
-    eventBus.emit("ui:challenge_made");
+    const canChallenge =
+      this.game.challengeSystem?.canChallenge() &&
+      (!gameState.currentPlayer ||
+        gameState.currentPlayer.type === PLAYER_TYPES.HUMAN);
 
-    // Provide immediate feedback
-    this.addLogMessage("🎯 You challenged the AI's claim!", "action");
-  }
+    if (canChallenge) {
+      this.elements.challengeBtn.style.display = "block";
+      this.elements.challengeBtn.disabled = false;
+      this.elements.challengeBtn.classList.add("pulse");
 
-  /**
-   * Update scores
-   */
-  updateScores() {
-    if (this.game && this.game.humanPlayer && this.game.aiPlayer) {
-      if (this.elements.playerScore) {
-        this.elements.playerScore.textContent = this.game.humanPlayer.score;
+      const challengeablePlay =
+        this.game.challengeSystem.getChallengeablePlay();
+      if (challengeablePlay) {
+        this.elements.challengeBtn.title = `Challenge ${challengeablePlay.player}'s ${challengeablePlay.claimedType} claim`;
       }
-      if (this.elements.aiScore) {
-        this.elements.aiScore.textContent = this.game.aiPlayer.score;
-      }
-    }
-  }
-
-  /**
-   * Update turn indicator
-   * @param {Object} gameState - Current game state
-   */
-  updateTurnIndicator(gameState) {
-    if (!this.elements.turnIndicator) return;
-
-    let text = "Game Setup";
-
-    if (gameState.currentPlayer) {
-      if (gameState.currentPlayer.type === PLAYER_TYPES.HUMAN) {
-        text = "Your Turn";
-      } else {
-        text = "AI Turn";
-      }
-
-      // FIXED: Better challenge window indication
-      if (
-        gameState.waitingForChallenge ||
-        (this.game.challengeSystem && this.game.challengeSystem.canChallenge())
-      ) {
-        text = "⚡ Challenge Opportunity!";
-      }
-    }
-
-    switch (gameState.turnPhase) {
-      case TURN_PHASES.BATTLE:
-        text = "Battle Phase";
-        break;
-      case TURN_PHASES.SCORING:
-        text = "Scoring";
-        break;
-    }
-
-    this.elements.turnIndicator.textContent = text;
-  }
-
-  /**
-   * Update round counter
-   * @param {number} roundNumber - Current round number
-   */
-  updateRoundCounter(roundNumber) {
-    if (this.elements.roundCounter) {
-      this.elements.roundCounter.textContent = `Round ${roundNumber}`;
-    }
-  }
-
-  /**
-   * Update grid display
-   */
-  updateGrid() {
-    if (!this.elements.gameGrid || !this.game) return;
-
-    const gridPositions = this.elements.gameGrid.children;
-
-    for (let i = 0; i < gridPositions.length; i++) {
-      const positionElement = gridPositions[i];
-      const card = this.game.gridSystem.getCardAt(i);
-
-      // Clear existing content
-      positionElement.innerHTML = "";
-      positionElement.className = "grid-position";
-
-      if (card) {
-        // Add occupied class
-        positionElement.classList.add("occupied");
-
-        // Create card display
-        const gridCard = document.createElement("div");
-        gridCard.className = "grid-card";
-
-        const cardType = document.createElement("div");
-        cardType.className = "card-type";
-        cardType.textContent = CARD_INFO[card.claimedType || card.type].icon;
-
-        const cardOwner = document.createElement("div");
-        cardOwner.className = "card-owner";
-        cardOwner.textContent = card.owner
-          ? card.owner.type === PLAYER_TYPES.HUMAN
-            ? "You"
-            : "AI"
-          : "?";
-
-        gridCard.appendChild(cardType);
-        gridCard.appendChild(cardOwner);
-        positionElement.appendChild(gridCard);
-
-        // Add owner-specific styling
-        if (card.owner && card.owner.type === PLAYER_TYPES.HUMAN) {
-          positionElement.classList.add("player-card");
-        } else if (card.owner && card.owner.type === PLAYER_TYPES.AI) {
-          positionElement.classList.add("ai-card");
-        }
-
-        // Show revealed state
-        if (card.isRevealed) {
-          positionElement.classList.add("revealed");
-          if (card.isBluffing()) {
-            positionElement.classList.add("was-bluff");
-          }
-        }
-      }
-
-      // Handle selection state
-      if (i === this.game.selectedPosition) {
-        positionElement.classList.add("selected");
-      }
-    }
-  }
-
-  // Additional methods...
-  handlePositionSelection(position) {
-    if (!this.game || !this.game.gridSystem.isPositionAvailable(position)) {
-      return;
-    }
-
-    eventBus.emit("ui:position_selected", { position });
-
-    // Update visual selection
-    this.clearPositionSelection();
-    const positionElement = this.elements.gameGrid.children[position];
-    if (positionElement) {
-      positionElement.classList.add("selected");
-      this.selectedPositionElement = positionElement;
-    }
-
-    this.updateUI();
-  }
-
-  handleClaimSelection(claimedType) {
-    eventBus.emit("ui:claim_selected", { claimedType });
-    this.updateUI();
-  }
-
-  handlePlayConfirmation() {
-    eventBus.emit("ui:play_confirmed");
-    this.clearSelections();
-    this.updateUI();
-  }
-
-  handlePlayCancellation() {
-    eventBus.emit("ui:play_cancelled");
-    this.clearSelections();
-    this.updateUI();
-  }
-
-  handlePauseToggle() {
-    if (this.game) {
-      if (this.game.isPaused) {
-        this.game.resumeGame();
-      } else {
-        this.game.pauseGame();
-      }
-    }
-  }
-
-  handleKeyPress(event) {
-    switch (event.key) {
-      case "Escape":
-        this.handlePlayCancellation();
-        this.hideModal();
-        break;
-      case "Enter":
-        if (!this.elements.confirmPlay?.disabled) {
-          this.handlePlayConfirmation();
-        }
-        break;
-      case " ":
-        if (
-          !this.elements.challengeBtn?.disabled &&
-          this.elements.challengeBtn?.style.display !== "none"
-        ) {
-          event.preventDefault();
-          this.handleChallenge();
-        }
-        break;
-      case "p":
-      case "P":
-        this.handlePauseToggle();
-        break;
-    }
-  }
-
-  handlePositionHover(position, isEntering) {
-    const positionElement = this.elements.gameGrid.children[position];
-    if (!positionElement) return;
-
-    if (
-      isEntering &&
-      this.game &&
-      this.game.gridSystem.isPositionAvailable(position)
-    ) {
-      positionElement.classList.add("hover");
-      this.hoveredElements.add(positionElement);
     } else {
-      positionElement.classList.remove("hover");
-      this.hoveredElements.delete(positionElement);
+      this.elements.challengeBtn.style.display = "none";
+      this.elements.challengeBtn.disabled = true;
+      this.elements.challengeBtn.classList.remove("pulse");
+      this.elements.challengeBtn.title = "";
     }
   }
 
-  handleCardHover(card, isEntering) {
-    const cardElement = this.findCardElement(card.id);
-    if (!cardElement) return;
-
-    if (isEntering) {
-      cardElement.classList.add("hover");
-      this.hoveredElements.add(cardElement);
-    } else {
-      cardElement.classList.remove("hover");
-      this.hoveredElements.delete(cardElement);
-    }
+  /**
+   * Initialize UI state
+   */
+  async initializeUI() {
+    this.hideLoadingScreen();
+    this.updateUI();
+    this.addLogMessage("Welcome to Bluff Battle! Start a new game to begin.");
   }
 
-  // Game event handlers
+  // Event Handlers
   onGameStart(data) {
     this.addLogMessage("Game started! Place your cards strategically.");
+
+    // FIXED: Reinitialize renderers after game starts (when players exist)
+    if (!this.handRenderer && this.game?.humanPlayer) {
+      this.handRenderer = new HandRenderer(
+        this.elements.playerHand,
+        this.game.humanPlayer
+      );
+      this.handRenderer.initialize();
+    }
+
     this.updateUI();
   }
 
@@ -841,7 +464,7 @@ class UIManager {
         ]
       } points.`
     );
-    this.showGameEndModal(data);
+    this.modalManager?.showGameEndModal(data);
   }
 
   onRoundStart(data) {
@@ -891,33 +514,35 @@ class UIManager {
     this.updateUI();
   }
 
-  onBattleStart(data) {
-    this.addLogMessage("Battle phase started!");
-  }
-
-  onBattleResult(data) {
-    if (data.explanation) {
-      this.addLogMessage(`Battle: ${data.explanation}`);
-    }
-  }
-
-  onBattleEnd(data) {
+  onChallengeWindowOpen(data) {
     this.addLogMessage(
-      `Battle phase complete. ${data.results.length} battles resolved.`
+      "💭 Challenge opportunity! Click the Challenge button if you think the AI is bluffing!",
+      "highlight"
     );
     this.updateUI();
   }
 
-  onScoreUpdate(data) {
-    this.updateScores();
-    if (data.pointsAdded > 0) {
-      const playerName = data.player.type === PLAYER_TYPES.HUMAN ? "You" : "AI";
+  onChallengeWindowClosed(data) {
+    this.addLogMessage("Challenge window closed.", "normal");
+    this.updateUI();
+  }
+
+  onChallengeMade(data) {
+    const challengerName =
+      data.challenger.type === PLAYER_TYPES.HUMAN ? "You" : "AI";
+    if (data.challengeResult) {
+      const wasBluff = data.challengeResult.wasBluff;
+      const resultText = wasBluff
+        ? "Challenge successful! They were bluffing!"
+        : "Challenge failed. They were telling the truth.";
       this.addLogMessage(
-        `${playerName} scored ${data.pointsAdded} point${
-          data.pointsAdded === 1 ? "" : "s"
-        }!`
+        `⚡ ${challengerName} challenged: ${resultText}`,
+        "challenge"
       );
+    } else {
+      this.addLogMessage(`⚡ ${challengerName} made a challenge`, "challenge");
     }
+    this.updateUI();
   }
 
   onError(data) {
@@ -925,207 +550,39 @@ class UIManager {
     this.addLogMessage("An error occurred. Please try again.", "error");
   }
 
-  // Utility methods
-  clearSelections() {
-    this.clearCardSelection();
-    this.clearPositionSelection();
-  }
-
-  clearPositionSelection() {
-    if (this.selectedPositionElement) {
-      this.selectedPositionElement.classList.remove("selected");
-      this.selectedPositionElement = null;
-    }
-  }
-
-  /**
-   * Add message to game log
-   * @param {string} message - Message to add
-   * @param {string} type - Message type ('normal', 'highlight', 'error')
-   */
+  // Utility Methods
   addLogMessage(message, type = "normal") {
-    if (!this.elements.gameLog) return;
+    if (this.logRenderer) {
+      this.logRenderer.addMessage(message, "general", type);
+    } else {
+      // Fallback: Direct DOM manipulation
+      if (this.elements.gameLog) {
+        const logEntry = document.createElement("div");
+        logEntry.className = `log-entry ${type}`;
+        logEntry.textContent = message;
+        this.elements.gameLog.appendChild(logEntry);
 
-    const logEntry = document.createElement("div");
-    logEntry.className = "log-entry";
-    logEntry.textContent = message;
+        // Keep log manageable
+        while (this.elements.gameLog.children.length > 50) {
+          this.elements.gameLog.removeChild(this.elements.gameLog.firstChild);
+        }
 
-    if (type === "highlight") {
-      logEntry.classList.add("highlight");
-    } else if (type === "error") {
-      logEntry.classList.add("error");
-    } else if (type === "challenge") {
-      logEntry.classList.add("challenge");
-    } else if (type === "action") {
-      logEntry.classList.add("action");
+        // Scroll to bottom
+        this.elements.gameLog.scrollTop = this.elements.gameLog.scrollHeight;
+      }
     }
-
-    this.elements.gameLog.appendChild(logEntry);
-
-    // Keep log manageable
-    while (this.elements.gameLog.children.length > 50) {
-      this.elements.gameLog.removeChild(this.elements.gameLog.firstChild);
-    }
-
-    // Scroll to bottom
-    this.elements.gameLog.scrollTop = this.elements.gameLog.scrollHeight;
   }
 
-  /**
-   * Show loading screen
-   */
   showLoadingScreen() {
     if (this.elements.loadingScreen) {
       this.elements.loadingScreen.classList.remove("hidden");
     }
   }
 
-  /**
-   * Hide loading screen
-   */
   hideLoadingScreen() {
     if (this.elements.loadingScreen) {
       this.elements.loadingScreen.classList.add("hidden");
     }
-  }
-
-  /**
-   * Show modal with content
-   * @param {string} title - Modal title
-   * @param {string} content - Modal content (HTML)
-   */
-  showModal(title, content) {
-    if (!this.elements.modalOverlay || !this.elements.modalContent) return;
-
-    this.elements.modalContent.innerHTML = `
-            <h2>${title}</h2>
-            <div class="modal-body">${content}</div>
-            <button class="secondary-btn" onclick="uiManager.hideModal()">Close</button>
-        `;
-
-    this.elements.modalOverlay.classList.remove("hidden");
-  }
-
-  /**
-   * Hide modal
-   */
-  hideModal() {
-    if (this.elements.modalOverlay) {
-      this.elements.modalOverlay.classList.add("hidden");
-    }
-  }
-
-  /**
-   * Show game end modal
-   * @param {Object} gameData - Game end data
-   */
-  showGameEndModal(gameData) {
-    const winnerName =
-      gameData.winner.type === PLAYER_TYPES.HUMAN ? "You" : "AI";
-    const isPlayerWinner = gameData.winner.type === PLAYER_TYPES.HUMAN;
-
-    const content = `
-            <div class="game-end-content">
-                <div class="winner-announcement ${
-                  isPlayerWinner ? "player-win" : "ai-win"
-                }">
-                    ${
-                      isPlayerWinner
-                        ? "🎉 Congratulations! 🎉"
-                        : "💻 AI Wins! 💻"
-                    }
-                </div>
-                <div class="final-scores">
-                    <h3>Final Scores</h3>
-                    <div class="score-line">You: ${
-                      gameData.finalScores.human
-                    }</div>
-                    <div class="score-line">AI: ${gameData.finalScores.ai}</div>
-                </div>
-                <div class="game-stats">
-                    <p>Rounds Played: ${gameData.roundsPlayed}</p>
-                    <p>Total Moves: ${gameData.totalMoves}</p>
-                    <p>Game Duration: ${Math.round(
-                      gameData.gameDuration / 1000
-                    )}s</p>
-                </div>
-                <div class="modal-actions">
-                    <button class="primary-btn" onclick="location.reload()">New Game</button>
-                </div>
-            </div>
-        `;
-
-    this.showModal("Game Over", content);
-  }
-
-  /**
-   * Show settings modal
-   */
-  showSettingsModal() {
-    const content = `
-            <div class="settings-content">
-                <h3>Game Settings</h3>
-                <div class="setting-group">
-                    <label>Challenge Time Window</label>
-                    <select id="challenge-time-setting">
-                        <option value="3000">3 seconds</option>
-                        <option value="5000" selected>5 seconds</option>
-                        <option value="8000">8 seconds</option>
-                        <option value="10000">10 seconds</option>
-                    </select>
-                </div>
-                <div class="setting-group">
-                    <label>
-                        <input type="checkbox" id="debug-mode" ${
-                          DEBUG.ENABLED ? "checked" : ""
-                        }>
-                        Debug Mode
-                    </label>
-                </div>
-                <div class="setting-group">
-                    <label>
-                        <input type="checkbox" id="skip-animations" ${
-                          DEBUG.SKIP_ANIMATIONS ? "checked" : ""
-                        }>
-                        Skip Animations
-                    </label>
-                </div>
-                <div class="modal-actions">
-                    <button class="primary-btn" onclick="uiManager.saveSettings()">Save Settings</button>
-                    <button class="secondary-btn" onclick="uiManager.hideModal()">Cancel</button>
-                </div>
-            </div>
-        `;
-
-    this.showModal("Settings", content);
-  }
-
-  /**
-   * Save settings from modal
-   */
-  saveSettings() {
-    const challengeTimeSelect = document.getElementById(
-      "challenge-time-setting"
-    );
-    const debugModeCheckbox = document.getElementById("debug-mode");
-    const skipAnimationsCheckbox = document.getElementById("skip-animations");
-
-    if (challengeTimeSelect && this.game && this.game.challengeSystem) {
-      this.game.challengeSystem.setChallengeTimeWindow(
-        parseInt(challengeTimeSelect.value)
-      );
-    }
-
-    if (debugModeCheckbox) {
-      DEBUG.ENABLED = debugModeCheckbox.checked;
-    }
-
-    if (skipAnimationsCheckbox) {
-      DEBUG.SKIP_ANIMATIONS = skipAnimationsCheckbox.checked;
-    }
-
-    this.addLogMessage("Settings saved successfully!", "highlight");
-    this.hideModal();
   }
 
   /**
@@ -1134,13 +591,9 @@ class UIManager {
   async startNewGame() {
     try {
       this.showLoadingScreen();
-      this.clearSelections();
 
-      // Initialize new game
       if (this.game) {
-        await this.game.initializeGame({
-          playerName: "Player",
-        });
+        await this.game.initializeGame({ playerName: "Player" });
       }
 
       this.hideLoadingScreen();
@@ -1157,10 +610,8 @@ class UIManager {
 
   /**
    * Validate UI state
-   * @returns {boolean} True if UI state is valid
    */
   validate() {
-    // Check if essential elements exist
     const requiredElements = [
       "gameContainer",
       "gameGrid",
@@ -1175,7 +626,6 @@ class UIManager {
       }
     }
 
-    // Check if grid has correct number of positions
     if (
       this.elements.gameGrid &&
       this.elements.gameGrid.children.length !== GAME_CONFIG.TOTAL_POSITIONS
@@ -1191,20 +641,15 @@ class UIManager {
    * Clean up UI Manager
    */
   destroy() {
-    // Clear all selections
-    this.clearSelections();
+    // Destroy specialized renderers
+    this.gridRenderer?.destroy();
+    this.handRenderer?.destroy();
+    this.logRenderer?.destroy();
+    this.modalManager?.destroy();
+    this.inputHandler?.destroy();
+    this.stateManager?.destroy();
 
-    // Clear hovered elements
-    this.hoveredElements.clear();
-
-    // Hide any modals
-    this.hideModal();
-
-    // Clear animation queue
-    this.animationQueue = [];
-    this.isAnimating = false;
-
-    // Remove event listeners (they'll be garbage collected with elements)
+    // Clear references
     this.elements = {};
     this.isInitialized = false;
 
