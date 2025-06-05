@@ -1,5 +1,5 @@
 /**
- * Bluff Battle - Grid Renderer
+ * Bluff Battle - Grid Renderer (FIXED)
  * Handles rendering and visual updates for the game grid
  */
 
@@ -10,6 +10,7 @@ class GridRenderer {
     this.positionElements = [];
     this.animationQueue = [];
     this.isAnimating = false;
+    this.selectedPosition = null; // Track selected position
 
     if (DEBUG.ENABLED) {
       console.log("GridRenderer initialized");
@@ -87,6 +88,16 @@ class GridRenderer {
         this.animateBattleResult(data.battle, data.outcome);
       }
     });
+
+    // FIXED: Listen for position selection updates
+    eventBus.on("ui:position_selected", (data) => {
+      this.setSelectedPosition(data.position);
+    });
+
+    // FIXED: Listen for selection clearing
+    eventBus.on(EVENTS.PLAY_CANCELLED, () => {
+      this.clearSelection();
+    });
   }
 
   /**
@@ -94,7 +105,58 @@ class GridRenderer {
    * @param {number} position - Clicked position
    */
   handlePositionClick(position) {
+    // Only allow selection if position is available
+    if (!this.gridSystem.isPositionAvailable(position)) {
+      return;
+    }
+
+    // FIXED: Update visual selection immediately
+    this.setSelectedPosition(position);
+
+    // Then emit the event
     eventBus.emit("ui:position_selected", { position });
+  }
+
+  /**
+   * FIXED: Set selected position with visual feedback
+   * @param {number} position - Position to select
+   */
+  setSelectedPosition(position) {
+    // Clear previous selection
+    this.clearSelection();
+
+    // Set new selection
+    if (position >= 0 && position < this.positionElements.length) {
+      this.selectedPosition = position;
+      const element = this.positionElements[position];
+      element.classList.add("selected");
+
+      // Update grid system state
+      this.gridSystem.setPositionState(position, POSITION_STATES.SELECTED);
+
+      if (DEBUG.ENABLED) {
+        console.log(`Grid position ${position} selected`);
+      }
+    }
+  }
+
+  /**
+   * FIXED: Clear position selection
+   */
+  clearSelection() {
+    if (this.selectedPosition !== null) {
+      const element = this.positionElements[this.selectedPosition];
+      if (element) {
+        element.classList.remove("selected");
+      }
+
+      // Reset grid system state
+      this.gridSystem.setPositionState(
+        this.selectedPosition,
+        POSITION_STATES.EMPTY
+      );
+      this.selectedPosition = null;
+    }
   }
 
   /**
@@ -106,7 +168,12 @@ class GridRenderer {
     const element = this.positionElements[position];
     if (!element) return;
 
-    if (isEntering && this.gridSystem.isPositionAvailable(position)) {
+    // FIXED: Only show hover if position is available and not already selected
+    if (
+      isEntering &&
+      this.gridSystem.isPositionAvailable(position) &&
+      position !== this.selectedPosition
+    ) {
       element.classList.add("hover");
     } else {
       element.classList.remove("hover");
@@ -120,6 +187,17 @@ class GridRenderer {
     for (let i = 0; i < this.positionElements.length; i++) {
       this.renderPosition(i);
     }
+
+    // FIXED: Restore selection state after render
+    if (this.selectedPosition !== null) {
+      const element = this.positionElements[this.selectedPosition];
+      if (
+        element &&
+        this.gridSystem.isPositionAvailable(this.selectedPosition)
+      ) {
+        element.classList.add("selected");
+      }
+    }
   }
 
   /**
@@ -132,9 +210,15 @@ class GridRenderer {
 
     if (!positionElement) return;
 
-    // Clear existing content
+    // Clear existing content and classes (except selected)
     positionElement.innerHTML = "";
+    const wasSelected = positionElement.classList.contains("selected");
     positionElement.className = "grid-position";
+
+    // FIXED: Restore selected state if it was selected
+    if (wasSelected && position === this.selectedPosition) {
+      positionElement.classList.add("selected");
+    }
 
     if (card) {
       // Position is occupied
@@ -165,11 +249,9 @@ class GridRenderer {
       positionElement.classList.add("empty");
     }
 
-    // Handle selection state
+    // Handle other position states
     const positionState = this.gridSystem.getPositionState(position);
-    if (positionState === POSITION_STATES.SELECTED) {
-      positionElement.classList.add("selected");
-    } else if (positionState === POSITION_STATES.HIGHLIGHTED) {
+    if (positionState === POSITION_STATES.HIGHLIGHTED) {
       positionElement.classList.add("highlighted");
     }
   }
@@ -221,6 +303,11 @@ class GridRenderer {
   animateCardPlacement(position) {
     const positionElement = this.positionElements[position];
     if (!positionElement) return;
+
+    // FIXED: Clear selection when card is placed
+    if (position === this.selectedPosition) {
+      this.clearSelection();
+    }
 
     if (DEBUG.SKIP_ANIMATIONS) {
       this.render();
@@ -302,14 +389,9 @@ class GridRenderer {
   clearHighlights() {
     for (let i = 0; i < this.positionElements.length; i++) {
       const element = this.positionElements[i];
-      element.classList.remove(
-        "highlighted",
-        "selected",
-        "potential",
-        "danger"
-      );
+      element.classList.remove("highlighted", "potential", "danger");
 
-      // Reset position state if it was highlighted
+      // Reset position state if it was highlighted (but preserve selected state)
       if (this.gridSystem.getPositionState(i) === POSITION_STATES.HIGHLIGHTED) {
         this.gridSystem.setPositionState(
           i,
@@ -493,6 +575,7 @@ class GridRenderer {
     this.clearRecommendations();
     this.clearBattlePreview();
     this.clearPath();
+    this.clearSelection();
 
     // Clear animation queue
     this.animationQueue = [];
